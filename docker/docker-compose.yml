@@ -3,7 +3,23 @@
 # ================================================================
 
 services:
-  # === OpenClaw（内部服务，不暴露端口到宿主机，仅 internal 网络）===
+  # === 原生 OpenClaw（无 arsguard 加固，不对外暴露端口）===
+  openclaw-native:
+    image: alpine/openclaw:latest
+    container_name: arsguard-openclaw-native
+    networks:
+      - arsguard_net
+    environment:
+      - OPENCLAW_PORT=8081
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    command: ["openclaw", "gateway", "run", "--allow-unconfigured", "--port", "8081"]
+
+  # === OpenClaw + arsguard（内部服务，不暴露端口到宿主机，仅 internal 网络）===
   openclaw:
     image: openclaw/openclaw:latest
     container_name: arsguard-openclaw
@@ -21,8 +37,8 @@ services:
       - ARSGUARD_CONFIG=/arsguard/config/arsguard.yaml
       - ARSGUARD_ENABLED=true
     volumes:
-      - ../arsguard/config:/arsguard/config:ro
-      - ../arsguard/src:/arsguard/plugins:ro
+      - ../config:/arsguard/config:ro
+      - ../src:/arsguard/plugins:ro
       - arsguard_data:/data
     restart: unless-stopped
     healthcheck:
@@ -31,7 +47,7 @@ services:
       timeout: 5s
       retries: 3
 
-  # === Squid 反向代理（唯一对外入口）===
+  # === Squid 反向代理（固化入口：http://localhost:3128 → openclaw:8080）===
   squid:
     image: ubuntu/squid:latest
     container_name: arsguard-squid
@@ -39,11 +55,10 @@ services:
       context: ./squid
       dockerfile: Dockerfile
     ports:
-      - "3128:3128"   # 仅 Squid 对外暴露端口
+      - "3128:3128"   # 全量加固入口
     networks:
       - arsguard_net
     volumes:
-      # 根据分支选择不同配置，默认使用 http 配置
       - ./squid/http/squid.conf:/etc/squid/squid.conf:ro
       - ./squid/ws/squid.conf:/etc/squid/squid-ws.conf:ro
     depends_on:
@@ -52,6 +67,26 @@ services:
     restart: unless-stopped
     cap_add:
       - NET_ADMIN    # Squid 需要网络管理权限
+
+  # === Squid 原生代理（透传入口：http://localhost:3129 → openclaw-native:8081）===
+  squid-native:
+    image: ubuntu/squid:latest
+    container_name: arsguard-squid-native
+    build:
+      context: ./squid
+      dockerfile: Dockerfile
+    ports:
+      - "3129:3129"   # 原生透传入口
+    networks:
+      - arsguard_net
+    volumes:
+      - ./squid/native/squid.conf:/etc/squid/squid.conf:ro
+    depends_on:
+      openclaw-native:
+        condition: service_healthy
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
 
 networks:
   arsguard_net:
